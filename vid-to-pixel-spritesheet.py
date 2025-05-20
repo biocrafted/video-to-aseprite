@@ -501,5 +501,25 @@ def main():
     print(f"  Output GIF: {GIF_OUTPUT_FILE}")
     print(f"Intermediate files are in subdirectories within: {BASE_OUTPUT_DIR}")
 
+    # Instructions for Aseprite
+    try:
+        num_frames = len([name for name in os.listdir(FINAL_FRAMES_DIR) if os.path.isfile(os.path.join(FINAL_FRAMES_DIR, name)) and name.lower().endswith(".png")])
+        if num_frames > 0:
+            print(f"\n--- How to Import into Aseprite ---")
+            print(f"1. Open Aseprite.")
+            print(f"2. Go to File > Import > Import Sprite Sheet.")
+            print(f"3. Select the file: {SPRITESHEET_OUTPUT_FILE}")
+            print(f"4. In the 'Import Sprite Sheet' dialog:")
+            print(f"   - Type: Horizontal")
+            print(f"   - Columns: {num_frames}")
+            print(f"   - Rows: 1")
+            print(f"5. Click 'Import'.")
+        else:
+            print("\nCould not determine the number of frames for Aseprite instructions as no frames were found in the final directory.")
+    except Exception as e:
+        print(f"\nCould not automatically provide Aseprite import instructions due to an error: {e}")
+        print(f"  You can still import '{SPRITESHEET_OUTPUT_FILE}' manually. Count the number of frames in '{FINAL_FRAMES_DIR}'.")
+
+
 if __name__ == "__main__":
     main()

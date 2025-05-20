@@ -53,3 +53,18 @@ The script contains configuration variables at the top that can be adjusted:
 *   `VIDEO_FPS`, `GIF_FPS`, `GIF_FRAME_SKIP_RATIO`.
 *   `PIXELATION_DOWNSCALE_FACTOR`: Factor for resizing images.
 *   `QUANTIZE_COLORS`: Number of colors for quantization. 
+
+## Importing into Aseprite
+
+Once the script has finished, you will find `final_spritesheet.png` in the `test_pipeline_output` directory (or your configured output directory). To import this into Aseprite:
+
+1.  Open Aseprite.
+2.  Go to **File > Import > Import Sprite Sheet**.
+3.  Navigate to the output directory and select `final_spritesheet.png`.
+4.  In the "Import Sprite Sheet" dialog box:
+    *   Make sure the **Type** is set to **Horizontal**.
+    *   Set **Columns** to the number of frames in your video/spritesheet. The script will print this number when it finishes, or you can count the number of images in the `04_final_frames` subdirectory.
+    *   Set **Rows** to **1**.
+5.  Click **Import**.
+
+Your frames should now be imported into Aseprite, ready for editing or animation. 
