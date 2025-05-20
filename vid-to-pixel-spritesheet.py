@@ -9,11 +9,12 @@ import argparse # For command-line arguments
 
 # --- CONFIGURATION ---
 INPUT_VIDEO = "target.mp4"
-BASE_OUTPUT_DIR = "test_pipeline_output" # Renamed to avoid confusion with other test outputs
+BASE_OUTPUT_DIR = "test_pipeline_output" # Main output directory
 RAW_FRAMES_DIR = os.path.join(BASE_OUTPUT_DIR, "01_raw_frames")
-NO_BG_FRAMES_DIR = os.path.join(BASE_OUTPUT_DIR, "02_no_bg_frames")
-PIXELATED_FRAMES_DIR = os.path.join(BASE_OUTPUT_DIR, "03_pixelated_frames")
-FINAL_FRAMES_DIR = os.path.join(BASE_OUTPUT_DIR, "04_final_frames")
+NO_BG_FRAMES_DIR = os.path.join(BASE_OUTPUT_DIR, "02_no_bg_frames") # Output of RemBG
+PIXELATED_FRAMES_DIR = os.path.join(BASE_OUTPUT_DIR, "03_pixelated_frames") # Output of Pixelate
+# QUANTIZED_FRAMES_DIR no longer needed for this pipeline order
+FINAL_FRAMES_DIR = os.path.join(BASE_OUTPUT_DIR, "04_final_frames") # Output of Quantize
 SPRITESHEET_OUTPUT_FILE = os.path.join(BASE_OUTPUT_DIR, "final_spritesheet.png")
 
 # GIF Configuration
@@ -24,7 +25,8 @@ GIF_FRAME_PATTERN = "frame_%04d.png" # Expected pattern in the final frames fold
 
 VIDEO_FPS = 25 # FPS for extracting frames
 PIXELATION_DOWNSCALE_FACTOR = 8 # Factor by which to downscale the image dimensions (e.g., 8 means 1/8th size)
-QUANTIZE_COLORS = 16 # Number of colors for final quantization
+QUANTIZE_COLORS = 32 # Number of colors for final quantization
+MAX_PALETTE_FRAMES = 50 # Max frames to sample for global palette generation
 
 
 # --- HELPER FUNCTIONS ---
@@ -45,9 +47,9 @@ def create_directories():
     dirs_to_create = [
         BASE_OUTPUT_DIR,
         RAW_FRAMES_DIR,
-        NO_BG_FRAMES_DIR,
-        PIXELATED_FRAMES_DIR,
-        FINAL_FRAMES_DIR
+        NO_BG_FRAMES_DIR,     # For 1st BG removal output
+        PIXELATED_FRAMES_DIR, # For pixelation output
+        FINAL_FRAMES_DIR      # For quantization output
     ]
     for dir_path in dirs_to_create:
         if os.path.exists(dir_path):
@@ -193,9 +195,10 @@ def process_frames_remove_background(input_dir, output_dir, use_high_quality_mod
         print("Background removal stage with rembg complete.")
     return True
 
-def process_frames_quantize(input_dir, output_dir, num_colors):
-    """Quantizes colors of frames with specific alpha handling using MEDIANCUT."""
-    print(f"Quantizing frames in '{input_dir}' to {num_colors} colors (with custom alpha handling, MEDIANCUT), output to '{output_dir}'...")
+def process_frames_quantize(input_dir, output_dir, num_colors, global_palette_image=None):
+    """Quantizes colors of frames, preserving original alpha, optionally using a global palette."""
+    operation_type = "using global palette" if global_palette_image else "generating individual palettes"
+    print(f"Quantizing frames in '{input_dir}' to {num_colors} colors ({operation_type}, MEDIANCUT, preserving original alpha), output to '{output_dir}'...")
 
     if not os.path.exists(input_dir):
         print(f"ERROR: Input directory for quantization not found: {input_dir}")
@@ -208,46 +211,38 @@ def process_frames_quantize(input_dir, output_dir, num_colors):
             input_path = os.path.join(input_dir, filename)
             output_path = os.path.join(output_dir, filename)
             try:
-                print(f"  Processing (quantize): {filename}")
+                print(f"  Processing (quantize {operation_type}): {filename}")
                 img = Image.open(input_path)
 
                 if img.mode != 'RGBA':
-                    # This case should ideally not be hit if previous steps output RGBA
-                    print(f"  Warning: Frame {filename} is not RGBA, converting. Alpha might be lost or defaulted.")
+                    print(f"  Warning: Frame {filename} for quantization is not RGBA, converting. This is unexpected if preceeded by background removal.")
                     img = img.convert('RGBA')
 
-                # 1. Create the new alpha mask:
-                #    - Original alpha == 0   -> new alpha = 0 (fully transparent)
-                #    - Original alpha > 0    -> new alpha = 255 (fully opaque)
+                # Separate original alpha channel
                 original_alpha_channel = img.split()[-1]
-                new_alpha_data = bytearray()
-                for alpha_value in original_alpha_channel.tobytes():
-                    if alpha_value > 0:
-                        new_alpha_data.append(255)
-                    else:
-                        new_alpha_data.append(0)
                 
-                new_alpha_mask = Image.frombytes(original_alpha_channel.mode, original_alpha_channel.size, bytes(new_alpha_data))
+                # Convert to RGB for quantization (original alpha is kept aside)
+                rgb_img = img.convert('RGB')
 
-                # 2. Composite the original image onto an opaque white background.
-                white_background = Image.new("RGBA", img.size, (255, 255, 255, 255))
-                composited_img = Image.alpha_composite(white_background, img)
-
-                # 3. Convert to RGB for quantization.
-                rgb_to_quantize = composited_img.convert("RGB")
-
-                # 4. Quantize the RGB image using MEDIANCUT.
-                quantized_p_img = rgb_to_quantize.quantize(
-                    colors=num_colors, 
-                    method=Image.Quantize.MEDIANCUT, # Using MEDIANCUT
-                    dither=Image.Dither.NONE
-                )
+                # Quantize the RGB image
+                if global_palette_image:
+                    quantized_p_img = rgb_img.quantize(
+                        palette=global_palette_image,
+                        dither=Image.Dither.NONE
+                    )
+                else:
+                    print(f"  Warning: No global palette provided for {filename}. Generating individual palette.")
+                    quantized_p_img = rgb_img.quantize(
+                        colors=num_colors, 
+                        method=Image.Quantize.MEDIANCUT,
+                        dither=Image.Dither.NONE
+                    )
                 
-                # 5. Convert palettized image back to RGB.
+                # Convert palettized image back to RGB
                 final_rgb_img = quantized_p_img.convert("RGB")
 
-                # 6. Merge the quantized RGB data with the new_alpha_mask.
-                final_output_img = Image.merge("RGBA", final_rgb_img.split() + (new_alpha_mask,))
+                # Merge the quantized RGB data with the original alpha channel
+                final_output_img = Image.merge("RGBA", final_rgb_img.split() + (original_alpha_channel,))
                 
                 final_output_img.save(output_path)
 
@@ -381,6 +376,70 @@ def create_spritesheet(input_dir, output_file):
         print(f"Error saving spritesheet {output_file}: {e}")
         return False
 
+def generate_global_palette(frame_source_dir, num_colors, max_frames_to_sample):
+    """Generates a global palette from a sample of frames."""
+    print(f"Generating global palette from up to {max_frames_to_sample} frames in {frame_source_dir}...")
+    source_frames = []
+    for filename in sorted(os.listdir(frame_source_dir)):
+        if filename.lower().endswith((".png")):
+            source_frames.append(os.path.join(frame_source_dir, filename))
+    
+    if not source_frames:
+        print("  No source frames found to generate global palette. Will use individual palettes.")
+        return None
+
+    # Sample frames for palette generation
+    sample_frames_paths = source_frames[:max_frames_to_sample]
+    
+    loaded_images = []
+    total_width = 0
+    max_height = 0
+
+    for frame_path in sample_frames_paths:
+        try:
+            img = Image.open(frame_path)
+            if img.mode != 'RGBA': # Ensure RGBA for consistent processing before palette generation
+                img = img.convert('RGBA')
+            
+            # For palette generation, we need to feed the quantizer opaque colors.
+            # Composite onto white, then convert to RGB.
+            white_bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+            composited_for_palette = Image.alpha_composite(white_bg, img)
+            rgb_for_palette = composited_for_palette.convert("RGB")
+            loaded_images.append(rgb_for_palette)
+            
+            total_width += rgb_for_palette.width
+            if rgb_for_palette.height > max_height:
+                max_height = rgb_for_palette.height
+        except Exception as e:
+            print(f"  Warning: Could not load or process frame {frame_path} for palette generation: {e}")
+
+    if not loaded_images:
+        print("  No images successfully loaded for global palette. Will use individual palettes.")
+        return None
+
+    # Create a contact sheet of the sampled (and processed for palette) images
+    # This gives the quantizer a good overview of all colors
+    contact_sheet = Image.new('RGB', (total_width, max_height))
+    current_x = 0
+    for img in loaded_images:
+        contact_sheet.paste(img, (current_x, 0))
+        current_x += img.width
+    
+    print(f"  Generating palette from contact sheet ({len(loaded_images)} frames, {contact_sheet.width}x{contact_sheet.height})...")
+    try:
+        # Quantize the contact sheet to get the global palette
+        # The result is a 'P' mode image, which itself serves as the palette
+        global_palette = contact_sheet.quantize(
+            colors=num_colors,
+            method=Image.Quantize.MEDIANCUT # Consistent with per-frame quantization
+        )
+        print("  Global palette generated successfully.")
+        return global_palette
+    except Exception as e:
+        print(f"  Error generating global palette: {e}. Will fall back to individual palettes.")
+        return None
+
 # --- MAIN EXECUTION ---
 def main():
     parser = argparse.ArgumentParser(description="Convert a video to a pixel art spritesheet and GIF.")
@@ -408,27 +467,31 @@ def main():
         print("Halting pipeline due to video decompilation error.")
         return
 
-    # Stage 2: Remove background (on full-resolution frames)
+    # Stage 2: Remove Background (Pass 1)
     if not process_frames_remove_background(RAW_FRAMES_DIR, NO_BG_FRAMES_DIR, args.high_quality):
         print("Halting pipeline due to background removal error.")
         return
 
-    # Stage 3: Pixelate frames (now on background-removed frames)
+    # Stage 3: Pixelate Frames (on background-removed frames)
     if not process_frames_pixelate(NO_BG_FRAMES_DIR, PIXELATED_FRAMES_DIR, PIXELATION_DOWNSCALE_FACTOR):
         print("Halting pipeline due to pixelation error.")
         return
 
-    # Stage 4: Quantize colors (on pixelated, background-removed frames)
-    if not process_frames_quantize(PIXELATED_FRAMES_DIR, FINAL_FRAMES_DIR, QUANTIZE_COLORS):
+    # Stage 4: Generate Global Palette (from pixelated, background-removed frames)
+    global_palette_img = generate_global_palette(PIXELATED_FRAMES_DIR, QUANTIZE_COLORS, MAX_PALETTE_FRAMES)
+
+    # Stage 5: Quantize Colors (on pixelated, background-removed frames)
+    # Output directly to FINAL_FRAMES_DIR
+    if not process_frames_quantize(PIXELATED_FRAMES_DIR, FINAL_FRAMES_DIR, QUANTIZE_COLORS, global_palette_image=global_palette_img):
         print("Halting pipeline due to quantization error.")
         return
 
-    # Stage 5: Create spritesheet (from final processed frames)
+    # Stage 6: Create spritesheet (from final processed frames)
     if not create_spritesheet(FINAL_FRAMES_DIR, SPRITESHEET_OUTPUT_FILE):
         print("Halting pipeline due to spritesheet creation error.")
         return
 
-    # Stage 6: Create GIF (from final processed frames)
+    # Stage 7: Create GIF (from final processed frames)
     if not create_gif_from_frames(FINAL_FRAMES_DIR, GIF_FRAME_PATTERN, GIF_OUTPUT_FILE, 
                                   BASE_OUTPUT_DIR, VIDEO_FPS, GIF_FPS, GIF_FRAME_SKIP_RATIO):
         print("Pipeline warning: GIF creation failed.") # Non-fatal
