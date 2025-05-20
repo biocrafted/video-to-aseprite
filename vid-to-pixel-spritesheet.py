@@ -2,8 +2,10 @@ import os
 import subprocess
 import shutil
 from PIL import Image
-from rembg import remove, new_session # Modified import
+from rembg import remove, new_session # Restored for default background removal
+from transparent_background import Remover # For high-quality background removal
 import math # Added for GIF creation
+import argparse # For command-line arguments
 
 # --- CONFIGURATION ---
 INPUT_VIDEO = "target.mp4"
@@ -131,9 +133,10 @@ def process_frames_pixelate(input_dir, output_dir, downscale_factor):
     print("Pixelation stage complete.")
     return True
 
-def process_frames_remove_background(input_dir, output_dir):
-    """Removes background from frames using a reusable rembg session."""
-    print(f"Processing frames in '{input_dir}' to remove background, output to '{output_dir}'...")
+def process_frames_remove_background(input_dir, output_dir, use_high_quality_model: bool):
+    """Removes background from frames.
+    Uses rembg by default, or InSPyReNet if use_high_quality_model is True.
+    """
     
     if not os.path.exists(input_dir):
         print(f"ERROR: Input directory for background removal not found: {input_dir}")
@@ -141,37 +144,58 @@ def process_frames_remove_background(input_dir, output_dir):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    # Create a rembg session to reuse the model
-    try:
-        print("  Initializing rembg session (model will be loaded once)...")
-        session = new_session() # Uses default model, e.g., u2net
-        print("  rembg session initialized.")
-    except Exception as e:
-        print(f"    Error initializing rembg session: {e}")
-        print(f"    Make sure you have a model downloaded (e.g., by running rembg once from CLI or ensuring model files are in ~/.u2net)")
-        return False
+    if use_high_quality_model:
+        print(f"Processing frames in '{input_dir}' to remove background (using InSPyReNet - High Quality), output to '{output_dir}'...")
+        try:
+            print("  Initializing InSPyReNet model (will be loaded once)...")
+            remover = Remover() # Using default settings for InSPyReNet
+            print("  InSPyReNet model initialized.")
+        except Exception as e:
+            print(f"    Error initializing InSPyReNet Remover: {e}")
+            return False
 
-    for filename in sorted(os.listdir(input_dir)):
-        if filename.lower().endswith((".png", ".jpg", ".jpeg")):
-            input_path = os.path.join(input_dir, filename)
-            output_path = os.path.join(output_dir, filename)
-            try:
-                print(f"  Processing (bg remove): {filename}")
-                with open(input_path, 'rb') as i:
-                    with open(output_path, 'wb') as o:
-                        input_data = i.read()
-                        # Use the session for background removal - reverting to default (no explicit alpha matting)
-                        output_data = remove(input_data, 
-                                             session=session)
-                        o.write(output_data)
-            except Exception as e:
-                print(f"    Error removing background from {filename}: {e}")
-    print("Background removal stage complete.")
+        for filename in sorted(os.listdir(input_dir)):
+            if filename.lower().endswith((".png", ".jpg", ".jpeg")):
+                input_path = os.path.join(input_dir, filename)
+                output_path = os.path.join(output_dir, filename) 
+                try:
+                    print(f"  Processing (bg remove with InSPyReNet): {filename}")
+                    img = Image.open(input_path).convert('RGB') 
+                    out_img = remover.process(img)
+                    out_img.save(output_path, "PNG")
+                except Exception as e:
+                    print(f"    Error removing background from {filename} using InSPyReNet: {e}")
+        print("Background removal stage with InSPyReNet complete.")
+    else:
+        print(f"Processing frames in '{input_dir}' to remove background (using rembg - Default Quality), output to '{output_dir}'...")
+        try:
+            print("  Initializing rembg session (model u2net will be loaded once)...")
+            # Using default u2net model for rembg
+            session = new_session(model_name="u2net") 
+            print("  rembg session initialized with model: u2net")
+        except Exception as e:
+            print(f"    Error initializing rembg session: {e}")
+            return False
+
+        for filename in sorted(os.listdir(input_dir)):
+            if filename.lower().endswith((".png", ".jpg", ".jpeg")):
+                input_path = os.path.join(input_dir, filename)
+                output_path = os.path.join(output_dir, filename)
+                try:
+                    print(f"  Processing (bg remove with rembg): {filename}")
+                    with open(input_path, 'rb') as i:
+                        with open(output_path, 'wb') as o:
+                            input_data = i.read()
+                            output_data = remove(input_data, session=session)
+                            o.write(output_data)
+                except Exception as e:
+                    print(f"    Error removing background from {filename} using rembg: {e}")
+        print("Background removal stage with rembg complete.")
     return True
 
 def process_frames_quantize(input_dir, output_dir, num_colors):
-    """Quantizes colors of frames."""
-    print(f"Quantizing frames in '{input_dir}' to {num_colors} colors, output to '{output_dir}'...")
+    """Quantizes colors of frames with specific alpha handling using MEDIANCUT."""
+    print(f"Quantizing frames in '{input_dir}' to {num_colors} colors (with custom alpha handling, MEDIANCUT), output to '{output_dir}'...")
 
     if not os.path.exists(input_dir):
         print(f"ERROR: Input directory for quantization not found: {input_dir}")
@@ -180,25 +204,53 @@ def process_frames_quantize(input_dir, output_dir, num_colors):
         os.makedirs(output_dir)
 
     for filename in sorted(os.listdir(input_dir)):
-        if filename.lower().endswith((".png", ".jpg", ".jpeg")):
+        if filename.lower().endswith((".png")): # Expecting PNGs with alpha from pixelation
             input_path = os.path.join(input_dir, filename)
             output_path = os.path.join(output_dir, filename)
             try:
                 print(f"  Processing (quantize): {filename}")
                 img = Image.open(input_path)
-                # Ensure image is in a mode that quantize can handle well, like RGBA or RGB
-                if img.mode not in ('RGB', 'RGBA'):
-                    img = img.convert('RGBA')
-                
-                # Use FASTOCTREE for RGBA images, as MAXCOVERAGE doesn't support it well for alpha.
-                # LIBIMAGEQUANT (method=3) is another option if quality with FASTOCTREE is not sufficient,
-                # but requires libimagequant library to be installed.
-                quantized_img = img.quantize(colors=num_colors, method=Image.Quantize.FASTOCTREE)
-                
-                # Ensure the final output is RGBA to preserve transparency
-                quantized_img = quantized_img.convert('RGBA')
 
-                quantized_img.save(output_path)
+                if img.mode != 'RGBA':
+                    # This case should ideally not be hit if previous steps output RGBA
+                    print(f"  Warning: Frame {filename} is not RGBA, converting. Alpha might be lost or defaulted.")
+                    img = img.convert('RGBA')
+
+                # 1. Create the new alpha mask:
+                #    - Original alpha == 0   -> new alpha = 0 (fully transparent)
+                #    - Original alpha > 0    -> new alpha = 255 (fully opaque)
+                original_alpha_channel = img.split()[-1]
+                new_alpha_data = bytearray()
+                for alpha_value in original_alpha_channel.tobytes():
+                    if alpha_value > 0:
+                        new_alpha_data.append(255)
+                    else:
+                        new_alpha_data.append(0)
+                
+                new_alpha_mask = Image.frombytes(original_alpha_channel.mode, original_alpha_channel.size, bytes(new_alpha_data))
+
+                # 2. Composite the original image onto an opaque white background.
+                white_background = Image.new("RGBA", img.size, (255, 255, 255, 255))
+                composited_img = Image.alpha_composite(white_background, img)
+
+                # 3. Convert to RGB for quantization.
+                rgb_to_quantize = composited_img.convert("RGB")
+
+                # 4. Quantize the RGB image using MEDIANCUT.
+                quantized_p_img = rgb_to_quantize.quantize(
+                    colors=num_colors, 
+                    method=Image.Quantize.MEDIANCUT, # Using MEDIANCUT
+                    dither=Image.Dither.NONE
+                )
+                
+                # 5. Convert palettized image back to RGB.
+                final_rgb_img = quantized_p_img.convert("RGB")
+
+                # 6. Merge the quantized RGB data with the new_alpha_mask.
+                final_output_img = Image.merge("RGBA", final_rgb_img.split() + (new_alpha_mask,))
+                
+                final_output_img.save(output_path)
+
             except Exception as e:
                 print(f"    Error quantizing {filename}: {e}")
     print("Quantization stage complete.")
@@ -331,7 +383,20 @@ def create_spritesheet(input_dir, output_file):
 
 # --- MAIN EXECUTION ---
 def main():
+    parser = argparse.ArgumentParser(description="Convert a video to a pixel art spritesheet and GIF.")
+    parser.add_argument(
+        "--high-quality",
+        action="store_true",
+        help="Use InSPyReNet for background removal (slower, potentially higher quality) instead of rembg."
+    )
+    args = parser.parse_args()
+
     print("Starting video to pixel spritesheet pipeline...")
+    if args.high_quality:
+        print("High-quality background removal mode enabled (using InSPyReNet).")
+    else:
+        print("Default background removal mode enabled (using rembg).")
+
 
     if not check_ffmpeg():
         return
@@ -344,7 +409,7 @@ def main():
         return
 
     # Stage 2: Remove background (on full-resolution frames)
-    if not process_frames_remove_background(RAW_FRAMES_DIR, NO_BG_FRAMES_DIR):
+    if not process_frames_remove_background(RAW_FRAMES_DIR, NO_BG_FRAMES_DIR, args.high_quality):
         print("Halting pipeline due to background removal error.")
         return
 
@@ -353,21 +418,20 @@ def main():
         print("Halting pipeline due to pixelation error.")
         return
 
-    # Stage 4: Quantize colors
+    # Stage 4: Quantize colors (on pixelated, background-removed frames)
     if not process_frames_quantize(PIXELATED_FRAMES_DIR, FINAL_FRAMES_DIR, QUANTIZE_COLORS):
         print("Halting pipeline due to quantization error.")
         return
 
-    # Stage 5: Create spritesheet
+    # Stage 5: Create spritesheet (from final processed frames)
     if not create_spritesheet(FINAL_FRAMES_DIR, SPRITESHEET_OUTPUT_FILE):
         print("Halting pipeline due to spritesheet creation error.")
         return
 
-    # Stage 6: Create GIF
+    # Stage 6: Create GIF (from final processed frames)
     if not create_gif_from_frames(FINAL_FRAMES_DIR, GIF_FRAME_PATTERN, GIF_OUTPUT_FILE, 
                                   BASE_OUTPUT_DIR, VIDEO_FPS, GIF_FPS, GIF_FRAME_SKIP_RATIO):
-        print("Pipeline warning: GIF creation failed.") # Non-fatal, spritesheet might still be fine
-        # return # Uncomment if GIF is critical
+        print("Pipeline warning: GIF creation failed.") # Non-fatal
 
     print(f"\nPipeline complete!")
     print(f"  Output spritesheet: {SPRITESHEET_OUTPUT_FILE}")

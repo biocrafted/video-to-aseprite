@@ -5,7 +5,7 @@ This project provides a Python script (`vid-to-pixel-spritesheet.py`) that autom
 ## Pipeline Steps
 
 1.  **Video Decompilation**: Extracts frames from the input video using `ffmpeg`.
-2.  **Background Removal**: Removes the background from each frame using `rembg`.
+2.  **Background Removal**: Removes the background from each frame. Uses `rembg` by default, or the InSPyReNet model (via `transparent-background`) if the `--high-quality` flag is used.
 3.  **Pixelation**: Resizes the background-removed frames to a smaller dimension to achieve a pixelated effect using Pillow.
 4.  **Color Quantization**: Reduces the color palette of the pixelated frames using Pillow.
 5.  **Spritesheet Creation**: Stitches the final processed frames into a horizontal spritesheet (PNG).
@@ -18,11 +18,13 @@ This project provides a Python script (`vid-to-pixel-spritesheet.py`) that autom
 *   Python libraries:
     *   Pillow
     *   rembg
+    *   transparent-background (for high-quality mode)
     *   numpy (<2.0, as `rembg`'s dependency `onnxruntime` may require it)
+    *   argparse (standard library)
 
 Install Python dependencies using pip:
 ```bash
-pip install Pillow rembg "numpy<2"
+pip install Pillow rembg "numpy<2" transparent-background
 ```
 
 ## Usage
@@ -32,7 +34,11 @@ pip install Pillow rembg "numpy<2"
     ```bash
     python vid-to-pixel-spritesheet.py
     ```
-3.  Outputs will be saved in a directory named `test_pipeline_output`. This includes:
+3.  For potentially higher quality background removal (slower):
+    ```bash
+    python vid-to-pixel-spritesheet.py --high-quality
+    ```
+4.  Outputs will be saved in a directory named `test_pipeline_output`. This includes:
     *   Intermediate frames from each processing stage.
     *   `final_spritesheet.png`
     *   `final_animation.gif`
